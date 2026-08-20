@@ -1,0 +1,130 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository herunterladen
+        uses: actions/checkout@v4
+
+      - name: Java 17 einrichten
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK einrichten
+        uses: android-actions/setup-android@v4
+
+      - name: Android SDK Pakete installieren
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;34.0.0"
+
+      - name: Gradle 8.9 einrichten
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Android-Projekt finden und reparieren
+        shell: bash
+        run: |
+          APP_BUILD="$(find "$GITHUB_WORKSPACE" -type f -path '*/app/build.gradle' | head -n 1)"
+
+          if [ -z "$APP_BUILD" ]; then
+            echo "FEHLER: Keine app/build.gradle gefunden."
+            echo "Vorhandene Dateien:"
+            find "$GITHUB_WORKSPACE" -maxdepth 5 -type f -print
+            exit 1
+          fi
+
+          PROJECT_ROOT="$(dirname "$(dirname "$APP_BUILD")")"
+          echo "Android-Projekt gefunden: $PROJECT_ROOT"
+
+          if [ ! -f "$PROJECT_ROOT/settings.gradle" ]; then
+            echo "settings.gradle fehlt -> wird automatisch erstellt"
+            cat > "$PROJECT_ROOT/settings.gradle" <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = 'ButzKonfigurator'
+          include ':app'
+          EOF
+          fi
+
+          if [ ! -f "$PROJECT_ROOT/build.gradle" ]; then
+            echo "build.gradle im Hauptordner fehlt -> wird automatisch erstellt"
+            cat > "$PROJECT_ROOT/build.gradle" <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+          fi
+
+          if [ ! -f "$PROJECT_ROOT/gradle.properties" ]; then
+            cat > "$PROJECT_ROOT/gradle.properties" <<'EOF'
+          org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF
+          fi
+
+          echo "GRADLE_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+          echo "Projektdateien:"
+          ls -la "$PROJECT_ROOT"
+          echo "app/build.gradle:"
+          cat "$PROJECT_ROOT/app/build.gradle"
+
+      - name: APK bauen
+        shell: bash
+        run: |
+          cd "$GRADLE_ROOT"
+          gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: APK finden und vorbereiten
+        shell: bash
+        run: |
+          APK_PATH="$(find "$GRADLE_ROOT/app/build/outputs" -type f -name '*.apk' | head -n 1)"
+
+          if [ -z "$APK_PATH" ]; then
+            echo "FEHLER: Keine APK gefunden."
+            find "$GRADLE_ROOT" -type f -name '*.apk' -print || true
+            exit 1
+          fi
+
+          echo "APK gefunden: $APK_PATH"
+          cp "$APK_PATH" "$GITHUB_WORKSPACE/Butz-Konfigurator.apk"
+          ls -lh "$GITHUB_WORKSPACE/Butz-Konfigurator.apk"
+
+      - name: APK als Download bereitstellen
+        uses: actions/upload-artifact@v4
+        with:
+          name: Butz-Konfigurator-APK
+          path: Butz-Konfigurator.apk
+          if-no-files-found: error
+          retention-days: 30
