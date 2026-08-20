@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - master
 
 permissions:
   contents: read
@@ -27,7 +26,7 @@ jobs:
       - name: Android SDK einrichten
         uses: android-actions/setup-android@v4
 
-      - name: Android SDK Pakete installieren
+      - name: Android Pakete installieren
         shell: bash
         run: |
           yes | sdkmanager --licenses >/dev/null || true
@@ -38,27 +37,29 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Android-Projekt finden und reparieren
+      - name: Android Projekt aus Dateien erstellen
         shell: bash
         run: |
-          APP_BUILD="$(find "$GITHUB_WORKSPACE" -type f -path '*/app/build.gradle' | head -n 1)"
+          set -e
 
-          if [ -z "$APP_BUILD" ]; then
-            echo "FEHLER: Keine app/build.gradle gefunden."
-            echo "Vorhandene Dateien:"
-            find "$GITHUB_WORKSPACE" -maxdepth 5 -type f -print
-            exit 1
-          fi
+          ROOT="$GITHUB_WORKSPACE"
+          PROJECT="$GITHUB_WORKSPACE/android-build"
 
-          PROJECT_ROOT="$(dirname "$(dirname "$APP_BUILD")")"
+          echo "Erstelle sauberes Android Projekt..."
 
-          echo "Android-Projekt gefunden:"
-          echo "$PROJECT_ROOT"
+          rm -rf "$PROJECT"
 
-          if [ ! -f "$PROJECT_ROOT/settings.gradle" ]; then
-            echo "settings.gradle fehlt -> wird automatisch erstellt"
+          mkdir -p "$PROJECT/app/src/main/java/de/butzliftparts/konfigurator"
+          mkdir -p "$PROJECT/app/src/main/res/values"
+          mkdir -p "$PROJECT/app/src/main/assets/web/app"
+          mkdir -p "$PROJECT/app/src/main/assets/web/admin"
+          mkdir -p "$PROJECT/app/src/main/assets/web/assets/models"
+          mkdir -p "$PROJECT/app/src/main/assets/web/assets/brand"
+          mkdir -p "$PROJECT/app/src/main/assets/web/assets/homescreen"
 
-            cat > "$PROJECT_ROOT/settings.gradle" <<'EOF'
+          echo "Erstelle settings.gradle..."
+
+          cat > "$PROJECT/settings.gradle" <<'EOF'
           pluginManagement {
               repositories {
                   google()
@@ -78,51 +79,194 @@ jobs:
           rootProject.name = 'ButzKonfigurator'
           include ':app'
           EOF
-          fi
 
-          if [ ! -f "$PROJECT_ROOT/build.gradle" ]; then
-            echo "build.gradle fehlt -> wird automatisch erstellt"
+          echo "Erstelle Root build.gradle..."
 
-            cat > "$PROJECT_ROOT/build.gradle" <<'EOF'
+          cat > "$PROJECT/build.gradle" <<'EOF'
           plugins {
               id 'com.android.application' version '8.7.3' apply false
           }
           EOF
-          fi
 
-          if [ ! -f "$PROJECT_ROOT/gradle.properties" ]; then
-            cat > "$PROJECT_ROOT/gradle.properties" <<'EOF'
+          echo "Erstelle gradle.properties..."
+
+          cat > "$PROJECT/gradle.properties" <<'EOF'
           org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
           android.useAndroidX=true
           EOF
+
+          echo "Erstelle app/build.gradle..."
+
+          cat > "$PROJECT/app/build.gradle" <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'de.butzliftparts.konfigurator'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'de.butzliftparts.konfigurator'
+                  minSdk 26
+                  targetSdk 35
+                  versionCode 1
+                  versionName '1.0.0'
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF
+
+          if [ ! -f "$ROOT/AndroidManifest.xml" ]; then
+              echo "FEHLER: AndroidManifest.xml fehlt."
+              exit 1
           fi
 
-          echo "GRADLE_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+          cp "$ROOT/AndroidManifest.xml" \
+             "$PROJECT/app/src/main/AndroidManifest.xml"
 
-          echo "Projektdateien:"
-          ls -la "$PROJECT_ROOT"
+          if [ ! -f "$ROOT/MainActivity.java" ]; then
+              echo "FEHLER: MainActivity.java fehlt."
+              exit 1
+          fi
+
+          cp "$ROOT/MainActivity.java" \
+             "$PROJECT/app/src/main/java/de/butzliftparts/konfigurator/MainActivity.java"
+
+          cat > "$PROJECT/app/src/main/res/values/styles.xml" <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:windowActionModeOverlay">true</item>
+                  <item name="android:windowNoTitle">true</item>
+                  <item name="android:colorAccent">#2F6F9F</item>
+                  <item name="android:navigationBarColor">#F8FAFC</item>
+                  <item name="android:statusBarColor">#1D3557</item>
+                  <item name="android:windowLightStatusBar">false</item>
+              </style>
+          </resources>
+          EOF
+
+          echo "Suche Startseite..."
+
+          HOME_HTML="$(find "$ROOT" -maxdepth 1 -type f -name 'index*.html' \
+            -exec grep -l 'Startseite für den Butz-Liftparts Tableau-Konfigurator' {} \; \
+            | head -n 1)"
+
+          echo "Suche Konfigurator..."
+
+          APP_HTML="$(find "$ROOT" -maxdepth 1 -type f -name 'index*.html' \
+            -exec grep -l 'bl_config_auth_v1' {} \; \
+            | head -n 1)"
+
+          echo "Suche Mitarbeiterbereich..."
+
+          ADMIN_HTML="$(find "$ROOT" -maxdepth 1 -type f -name 'index*.html' \
+            -exec grep -l 'Butz-Liftparts Mitarbeiterbereich' {} \; \
+            | head -n 1)"
+
+          if [ -z "$HOME_HTML" ]; then
+              echo "FEHLER: Startseiten-index.html nicht gefunden."
+              exit 1
+          fi
+
+          if [ -z "$APP_HTML" ]; then
+              echo "FEHLER: Konfigurator-index.html nicht gefunden."
+              exit 1
+          fi
+
+          if [ -z "$ADMIN_HTML" ]; then
+              echo "FEHLER: Admin-index.html nicht gefunden."
+              exit 1
+          fi
+
+          echo "Startseite: $HOME_HTML"
+          echo "Konfigurator: $APP_HTML"
+          echo "Admin: $ADMIN_HTML"
+
+          cp "$HOME_HTML" \
+             "$PROJECT/app/src/main/assets/web/index.html"
+
+          cp "$APP_HTML" \
+             "$PROJECT/app/src/main/assets/web/app/index.html"
+
+          cp "$ADMIN_HTML" \
+             "$PROJECT/app/src/main/assets/web/admin/index.html"
+
+          echo "Kopiere Javascript und CSS..."
+
+          find "$ROOT" -maxdepth 1 -type f \
+            \( -name '*.js' -o -name '*.css' \) \
+            -exec cp {} "$PROJECT/app/src/main/assets/web/assets/" \;
+
+          echo "Kopiere 3D Modelle..."
+
+          find "$ROOT" -maxdepth 1 -type f -name '*.json' \
+            -exec cp {} "$PROJECT/app/src/main/assets/web/assets/models/" \;
+
+          if [ -f "$ROOT/butz-liftparts-logo.png" ]; then
+              cp "$ROOT/butz-liftparts-logo.png" \
+                 "$PROJECT/app/src/main/assets/web/assets/brand/butz-liftparts-logo.png"
+          fi
+
+          if [ -f "$ROOT/technische-blaupause-aufzug.png" ]; then
+              cp "$ROOT/technische-blaupause-aufzug.png" \
+                 "$PROJECT/app/src/main/assets/web/assets/homescreen/technische-blaupause-aufzug.png"
+          fi
+
+          if [ -f "$ROOT/SUPABASE_SETUP_CUSTOMER_REQUESTS.sql" ]; then
+              cp "$ROOT/SUPABASE_SETUP_CUSTOMER_REQUESTS.sql" \
+                 "$PROJECT/app/src/main/assets/web/"
+          fi
+
+          echo "Launcher Icon vorbereiten..."
+
+          ICON="$(find "$ROOT" -maxdepth 1 -type f -name 'ic_launcher*.png' | head -n 1)"
+
+          if [ -n "$ICON" ]; then
+              for DENSITY in mdpi hdpi xhdpi xxhdpi xxxhdpi
+              do
+                  mkdir -p "$PROJECT/app/src/main/res/mipmap-$DENSITY"
+                  cp "$ICON" "$PROJECT/app/src/main/res/mipmap-$DENSITY/ic_launcher.png"
+              done
+          else
+              echo "FEHLER: ic_launcher.png nicht gefunden."
+              exit 1
+          fi
+
+          echo ""
+          echo "Android Projekt erfolgreich rekonstruiert."
+          echo ""
+
+          find "$PROJECT" -maxdepth 5 -type f | head -100
 
       - name: APK bauen
         shell: bash
         run: |
-          cd "$GRADLE_ROOT"
+          cd "$GITHUB_WORKSPACE/android-build"
           gradle :app:assembleDebug --no-daemon --stacktrace
 
-      - name: APK finden
+      - name: APK vorbereiten
         shell: bash
         run: |
-          APK_PATH="$(find "$GRADLE_ROOT/app/build/outputs" -type f -name '*.apk' | head -n 1)"
+          APK_PATH="$(find "$GITHUB_WORKSPACE/android-build/app/build/outputs" \
+            -type f -name '*.apk' | head -n 1)"
 
           if [ -z "$APK_PATH" ]; then
-            echo "FEHLER: Keine APK gefunden."
-            find "$GRADLE_ROOT" -type f -name '*.apk' -print || true
-            exit 1
+              echo "FEHLER: Keine APK gefunden."
+              exit 1
           fi
 
           echo "APK gefunden:"
           echo "$APK_PATH"
 
           cp "$APK_PATH" "$GITHUB_WORKSPACE/Butz-Konfigurator.apk"
+
+          ls -lh "$GITHUB_WORKSPACE/Butz-Konfigurator.apk"
 
       - name: APK als Download bereitstellen
         uses: actions/upload-artifact@v4
