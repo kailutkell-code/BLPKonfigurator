@@ -1,0 +1,133 @@
+name: Build Android APK V3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository herunterladen
+        uses: actions/checkout@v6
+
+      - name: Java 17 einrichten
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: V3 ZIP finden und entpacken
+        shell: bash
+        run: |
+          set -e
+
+          ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f \
+            -name 'Butz-Konfigurator-Android-V3-LOGIN-FIX.zip' \
+            -print -quit)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "FEHLER: V3 ZIP wurde nicht gefunden."
+            echo ""
+            echo "ZIP-Dateien im Repository:"
+            find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name '*.zip' -print
+            exit 1
+          fi
+
+          echo "ZIP gefunden:"
+          echo "$ZIP_FILE"
+
+          BUILD_DIR="$GITHUB_WORKSPACE/android-project"
+
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
+
+          unzip -q "$ZIP_FILE" -d "$BUILD_DIR"
+
+          echo ""
+          echo "ZIP erfolgreich entpackt."
+          echo ""
+
+          if [ ! -f "$BUILD_DIR/settings.gradle" ]; then
+            echo "FEHLER: settings.gradle fehlt in der ZIP."
+            exit 1
+          fi
+
+          if [ ! -f "$BUILD_DIR/build.gradle" ]; then
+            echo "FEHLER: build.gradle fehlt in der ZIP."
+            exit 1
+          fi
+
+          if [ ! -f "$BUILD_DIR/app/build.gradle" ]; then
+            echo "FEHLER: app/build.gradle fehlt in der ZIP."
+            exit 1
+          fi
+
+          echo "Android-Projekt ist vollständig."
+          echo "BUILD_DIR=$BUILD_DIR" >> "$GITHUB_ENV"
+
+      - name: Android SDK einrichten
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+
+      - name: Android Pakete installieren
+        shell: bash
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;34.0.0"
+
+      - name: Gradle 8.9 einrichten
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.9"
+
+      - name: Projektstruktur anzeigen
+        shell: bash
+        run: |
+          echo "Projekt:"
+          find "$BUILD_DIR" -maxdepth 4 -type f | head -100
+
+      - name: APK bauen
+        shell: bash
+        run: |
+          set -e
+
+          cd "$BUILD_DIR"
+
+          gradle :app:assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+      - name: APK finden
+        shell: bash
+        run: |
+          set -e
+
+          APK_FILE="$(find "$BUILD_DIR/app/build/outputs/apk" \
+            -type f \
+            -name '*.apk' \
+            -print -quit)"
+
+          if [ -z "$APK_FILE" ]; then
+            echo "FEHLER: APK wurde nicht gefunden."
+            find "$BUILD_DIR/app/build" -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "APK gefunden:"
+          echo "$APK_FILE"
+
+          cp "$APK_FILE" "$GITHUB_WORKSPACE/Butz-Konfigurator-V3.apk"
+
+          ls -lh "$GITHUB_WORKSPACE/Butz-Konfigurator-V3.apk"
+
+      - name: APK als Download bereitstellen
+        uses: actions/upload-artifact@v7
+        with:
+          name: Butz-Konfigurator-V3-APK
+          path: Butz-Konfigurator-V3.apk
+          if-no-files-found: error
+          retention-days: 30
